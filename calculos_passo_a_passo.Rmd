@@ -1,0 +1,83 @@
+---
+title: "Migração de Capital Humano Qualificado em SC - Censo 2010"
+author: "Gabriel Campos"
+date: "30/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Objetivo.
+
+O objetivo deste texto é tornar replicável os cálculos efetuados para se obter o saldo migratório assim como as outras medidas utilizadas no trabalho de conclusão de curso. Os microdados do censo demográfico de 2010 é disponibilizado pelo IBGE, podendo ser acessado no seguinte endereço eletrônico: **[IBGE](ftp://ftp.ibge.gov.br/Censos/Censo_Demografico_2010/Resultados_Gerais_da_Amostra/Microdados/)**. Os dados de migração utilizados nesta pesquisa são gerados através do questionário amostral de pessoas. Neste conjunto de código, objetiva-se estimar o número de imigrantes e emigrantes qualificados em Santa Catarina de forma a se obter um saldo migratório. A partir do saldo migratório tem-se a intenção de calcular outros índices de migração. 
+
+### 2. Iniciando o projeto.
+
+Para dar início ao projeto, vamos chamar os pacotes necessários para ler, fazer download e manipular os dados. 
+
+```{r library, message = FALSE, warning = FALSE}
+library(dplyr) # manipulação de dados
+library(readr) # leitura de dados
+library(survey) # analisar dados de pesquisas censitárias que possuem desenho amostral
+library('microdadosBrasil') #download dos microdados do censo 
+```
+
+#### 2.1. Entendendo as variáveis
+
+Com a ajuda dos metadados dos microdados do censo disponíveis no IBGE, vamos escolher as variáveis de interesse para a pesquisa:
+
+ * Unidade da Federação (V0001);
+ * Código do município (V0002);
+ * Área de ponderação (V0011);
+ * Peso Amostral (V0010);
+ * Controle (V0300);
+ * Variável Auxiliar da Idade Calculada em Anos (V6036);
+ * Nasceu neste município (V0618);
+ * Nasceu nesta Unidade da Federação (V0619);
+ * Residência em 31 de Julho de 2005 (V0626);
+ * UF de Residência em 31 de Julho de 2005 - Código (V06262);
+ * Município de residência em 31 de Julho de 2005 - Código (V6264);
+ * Nível de Instrução (V6400). 
+ 
+ #### 2.2. Importação dos dados
+
+Nesta etapa, vamos fazer o download dos dados e selecionar as variáveis de interesse. Primeiro baixamos os dados e depois criamos uma variável `amostra_pessoas` que contenha as as variáveis que nos interessa para a pesquisa.   
+
+```{r reading data 00}
+#ajustando diretório
+getwd()
+setwd('C:/Users/bielz/Documents/Indicium/Projeto_TCC/brain_drain_project')
+# Censo Demográfico 2010 -> rodar a linha de código abaixo (em comentário) para fazer o download.
+download_sourceData("CENSO", 2010, unzip = T)
+amostra_pessoas <- read_CENSO('pessoas', 2010, vars_subset = c("V0001", "V0002", "V0011", "V0010","V0300", "V0618","V0619","V6036", "V0626", "V6262", "V6264", "V6400"))
+```
+
+### 3. Os Imigrantes
+
+Nesta etapa, faremos os filtros para selecionar as pessoas que responderam o questionário em SC, ou no município de SC, em 2010, mas que em 31 de julho de 2005 residiam em outra unidade da federação ou outro municípo, ou seja os imigrantes. 
+
+```{r reading data 01}
+##Filtrando por unidade da federação = SC (imigrantes SC) 
+imigrantes_sc <- amostra_pessoas %>% filter(amostra_pessoas$V0001 == '42')
+## agrupando por área de ponderação
+imigrantes_sc <-  imigrantes_sc %>%
+        group_by(V0011)
+# Calcula tamanhos da população em cada área de ponderação 
+tamanho_pop <- aggregate(V0010 ~ V0011, data=imigrantes_sc, FUN="sum")
+# Ajusta nomes das colunas do arquivo com tamanhos populacionais
+names(tamanho_pop) <- c("V0011", "Npespop")
+# Agrega variável com tamanhos populacionais ao arquivo de dados
+imigrantes_sc <- inner_join(imigrantes_sc, tamanho_pop, by="V0011")
+# cria uma coluna com uns
+imigrantes_sc$one <- 1
+# Adiciona estrutura do plano amostral aos dados da amostra
+imigrantes_sc_plan <- svydesign(data=imigrantes_sc,
+                          ids = ~V0300,
+                          strata = ~V0011,
+                          fpc = ~Npespop,
+                          weights = ~V0010) 
+
+# Armazena dados de pessoas de SC num arquivo permanente
+saveRDS(imigrantes_sc_plan, file="imigrantes_sc_plan.rds")
