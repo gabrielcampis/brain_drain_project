@@ -1,0 +1,539 @@
+---
+title: "Migração de Capital Humano Qualificado em Santa Catarina - Censo 2000"
+author: "Gabriel Pereira Campos"
+date: "17/04/2022"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Objetivo.
+
+O objetivo deste texto é tornar replicável os cálculos efetuados para se estimar o fluxo de migrantes, o número de Imigarntes e Emigrantes, o saldo migratório assim como as outras medidas utilizadas no trabalho de conclusão de curso. Os microdados do censo demográfico de 2000 é disponibilizado pelo IBGE, podendo ser acessado no seguinte endereço eletrônico: [**IBGE**](ftp://ftp.ibge.gov.br/Censos/Censo_Demografico_2000/Resultados_Gerais_da_Amostra/Microdados/). Os dados de migração utilizados nesta pesquisa são gerados através do questionário amostral de pessoas.
+### 2. Iniciando o projeto.
+
+Para dar início ao projeto, vamos chamar os pacotes necessários para ler, fazer download e manipular os dados. 
+
+```{r library, message = FALSE, warning = FALSE}
+library(dplyr) # manipulação de dados
+library(readr) # leitura de dados
+library(survey) # analisar dados de pesquisas censitárias que possuem desenho amostral
+library('microdadosBrasil') #download dos microdados do censo 
+```
+
+#### 2.1. Entendendo as variáveis
+
+Com a ajuda dos metadados dos microdados do censo de 2000 disponíveis no IBGE, vamos escolher as variáveis de interesse para a pesquisa:
+
+ * Unidade da Federação (V0102);
+ * Código do município (V0103);
+ * Área de ponderação (AREAP);
+ * Peso Amostral (PES_PESSOA);
+ * Controle (V0300);
+ * Variável Auxiliar da Idade Calculada em Anos (V4752);
+ * Nasceu neste município (V0417);
+ * Nasceu nesta Unidade da Federação (V0418);
+ * Residência em 31 de Julho de 1995 (V0424);
+        1- Neste município, na zona urbana
+        2- Neste município, na zona rural
+        3- Em outro município, na zona urbana
+        4- Em outro município, na zona rural
+        5- Em outro país
+        6- Não era nascido
+        * Branco- para os não migrantes
+        
+ * UF de Residência em 31 de Julho de 1995 - Código (V4260);
+ * Município de residência em 31 de Julho de 1995 - Código (V4250);
+ * CURSO MAIS ELEVADO QUE FREQÜENTOU, CONCLUINDO PELO MENOS UMA SÉRIE (V0432). 
+ * CONCLUIU O CURSO NO QUAL ESTUDOU (V0434)
+ 
+#### 2.2. Importação dos dados
+
+Nesta etapa, vamos fazer o download dos dados e selecionar as variáveis de interesse. Primeiro baixamos os dados e depois criamos uma variável `amostra_pessoas` que contenha as as variáveis que nos interessa para a pesquisa.   
+
+```{r reading data 00, message=FALSE, warning=FALSE, include=FALSE}
+#ajustando diretório
+getwd()
+setwd("~/Indicium/Projeto_TCC/brain_drain_project/Microdados_2000")
+# Censo Demográfico 2000 -> rodar a linha de código abaixo (em comentário) para fazer o download.
+#download_sourceData("CENSO", 2000, unzip = T)
+amostra_pessoas <-
+        read_CENSO(
+                'pessoas',
+                2000,
+                vars_subset = c(
+                        "V0102",
+                        "V0103",
+                        "AREAP",
+                        "PES_PESSOA",
+                        "V0300",
+                        "V4752",
+                        "V0417",
+                        "V0418",
+                        "V0424",
+                        "V4260",
+                        "V4250",
+                        "V0432",
+                        "V0434"
+                )
+        )
+```
+Para facilitar o processo de análise, vamos importar um arquivo com os nomes dos municípios, bem como suas meso e microrregiões.
+
+``` {r reading data 01}
+#importando arquivos com os nomes dos municípios, bem como suas meso e microrregiões.
+codigos_sc <- read_delim(
+        "codigos_sc_2000.csv",
+        ";",
+        escape_double = FALSE,
+        col_types = cols(
+                cd_uf = col_character(),
+                cd_mesorregiao = col_character(),
+                cd_microrregiao = col_character(),
+                nome_microrregiao = col_character(),
+                cd_1_municipio = col_character(),
+                cd_2_municipio = col_character()
+        ),
+        trim_ws = TRUE
+)
+head(codigos_sc)
+
+codigos_cidades <- read_delim(
+        "codigos_cidades_e_ufs_2000.csv",
+        delim = ";",
+        escape_double = FALSE,
+        col_types = cols(
+                UF = col_character(),
+                `Mesor-região` = col_character(),
+                `Micror-região` = col_character(),
+                `Município` = col_character()
+        ),
+        trim_ws = TRUE
+)
+
+codigos_cidades$cd_UF <-
+        paste(codigos_cidades$UF, "00000", sep = "")
+head(codigos_cidades)
+
+codigos_ufs <- read_delim(
+        "codigos_ufs_2000.csv",
+        delim = ";",
+        escape_double = FALSE,
+        trim_ws = TRUE
+)
+codigos_ufs$cd_UF <- paste(codigos_ufs$UF, "00000", sep = "")
+head(codigos_ufs)
+
+
+```
+
+## 3. A População
+
+Nesta etapa, faremos os filtros para selecionar as pessoas que responderam o questionário em Santa Catarina. Além disso, precisaremos adicionar a estrutura do plano amostral, os pesos amostrais e as áreas de ponderação. Para isso, utilizamos o pacote [survey](https://cran.r-project.org/web/packages/survey/survey.pdf)
+
+```{r reading data 02}
+##Filtrando por unidade da federação = SC (imigrantes SC)
+populacao_sc <-
+        amostra_pessoas %>% filter(amostra_pessoas$V0102 == '42')
+## agrupando por área de ponderação
+populacao_sc <- populacao_sc %>%
+        group_by(AREAP)
+# Calcula tamanhos da população em cada área de ponderação
+tamanho_pop <-
+        aggregate(PES_PESSOA ~ AREAP, data = populacao_sc, FUN = "sum")
+# Ajusta nomes das colunas do arquivo com tamanhos populacionais
+names(tamanho_pop) <- c("AREAP", "Npespop")
+# Agrega variável com tamanhos populacionais ao arquivo de dados
+populacao_sc <- inner_join(populacao_sc, tamanho_pop, by = "AREAP")
+# cria uma coluna com uns
+populacao_sc$one <- 1
+# Adiciona estrutura do plano amostral aos dados da amostra
+populacao_sc_plan <- svydesign(
+        data = populacao_sc,
+        ids = ~ V0300,
+        strata = ~ AREAP,
+        fpc = ~ Npespop,
+        weights = ~ PES_PESSOA
+)
+
+# Armazena dados de pessoas de SC num arquivo permanente
+saveRDS(populacao_sc_plan, file = "populacao_sc_plan_2000.rds")
+```
+Agora, vamos aproveitar para calcular a população total do estado de Santa Catarina, pois precisaremos dessa variável futuramente. 
+
+```{r reading data 03}
+pop_sc <- svytotal(~ one , populacao_sc_plan)
+pop_sc
+```
+Como podemos ver, a população catarinense no censo de 2000 é de 5.357.864 pessoas. É o mesmo resultado disponibilizado pelo **[IBGE] (https://cidades.ibge.gov.br/brasil/sc/panorama)**. Futuramente, em nossos cálculos, vamos precisar da população qualificada do estado de SC de acordo com a nossa proxy utilizada no trabalho. Sendo assim, vamos obter este resultado a seguir:
+
+``` {r reading data 04}
+pop_qualificada_sc <-
+        svytotal(~ one, subset(populacao_sc_plan, 
+                               V4752 >= 25 &
+                                       V0432 %in% c(7,8))
+                 )
+pop_qualificada_sc
+```
+Conforme demonstrado, a população maior de 25 anos com ensino superior completo em Santa Catarina no Censo de 2000 é de 166.361 pessoas.
+
+##### 3.1. População e População Qualificada dos Municípios Catarinenses 
+
+No código abaixo vamos descobrir a população dos municípios catarinenses no censo de 2000. 
+
+``` {r reading data 05}
+pop_mun <- svyby( ~ one, ~ V0102 + V0103, populacao_sc_plan, svytotal)
+pop_mun <- as.data.frame(pop_mun)
+names(pop_mun)[3] <- c('populacao')
+pop_mun$cd_1_municipio <- pop_mun$V0103
+head(pop_mun)
+```
+Agora vamos descobrir a população qualificada desses municípios e o percentual em relação à população total. Vamos também adicionar a tabela os imigrantes qualificados observados na seção anterior.
+
+``` {r reading data 06}
+pop_mun_qualificada <-
+        svyby(
+                ~ one,
+                ~ V0102 + V0103,
+                subset(populacao_sc_plan,
+                       V4752 >= 25 &
+                               V0432 %in% c(7,8) &
+                               V0434 == 1),
+                svytotal
+        )
+pop_mun_qualificada$one <- round(pop_mun_qualificada$one)
+names(pop_mun_qualificada)[3] <- c('populacao_qualificada')
+pop_mun_qualificada$cd_1_municipio <- pop_mun_qualificada$V0103
+head(pop_mun_qualificada)
+
+populacao_mun <- left_join(
+        pop_mun
+        , pop_mun_qualificada %>% select(cd_1_municipio, populacao_qualificada)
+        , by = c("cd_1_municipio" = "cd_1_municipio")
+)
+
+
+write.csv2(populacao_mun, "populacao_mun_2000.csv" )
+```
+
+## 4 O Fluxo de Migrantes.
+
+Nesta etapa vamos observar a entrada e saída de migrantes com capital humano qualificado. 
+
+### 4.1 os Imigrantes em SC
+
+Primeiro, vamos estimar os imigrantes qualificados, isto é, as pessoas com ensino superior completo com idade maior ou igual a 25 anos que na data de referência do Censo Demográfico morava em Santa Catarina, mas em uma Data Fixa (5 anos anteriors - 31 de Julho de 1995) morava em outra Unidade da Federação.
+
+```{r reading data 07}
+#Aqui estamos pegando a população amostral construída anteriormentes e a segmentando para obter os imigrantes qualificados interestaduais em direção a SC proveninetes de cada uma das unidades federativas
+
+imigrantes_interestadual <-
+        svyby(
+                ~ one ,
+                ~ V0102 + V4260,
+                subset(
+                        populacao_sc_plan,
+                        V0424 %in% c(3, 4) &
+                                V4752 >= 25 &
+                                V0432 %in% c(7,8) &
+                                V4260 != '22'
+                ) ,
+                svytotal,
+                na.rm = TRUE
+        )
+
+imigrantes_interestadual$one <- round(imigrantes_interestadual$one)
+
+names(imigrantes_interestadual)[3] <- c('imigrantes_qualificados')
+names(imigrantes_interestadual)[2] <- c('UF_origem')
+imigrantes_interestadual <- inner_join(imigrantes_interestadual,
+                                       codigos_ufs,
+                                       by = c("UF_origem" = "cd_4260"))
+
+## Vamos aproveitar e descobrir o número total de imigrantes
+sum(imigrantes_interestadual$imigrantes_qualificados)
+
+
+``` 
+
+#### 4.1.1 Os Imigrantes em SC - A nível municipal
+
+```{r reading data 08}
+imigrantes_intermunicipal <-
+        svyby(
+                ~ one ,
+                ~ V0102 + V0103 + V4260 + V4250,
+                subset(
+                        populacao_sc_plan,
+                        V0424 %in% c(3, 4) &
+                                V4752 >= 25 &
+                                V0432 %in% c(7,8)
+                ) ,
+                svytotal,
+                na.rm = TRUE
+        )
+
+
+imigrantes_intermunicipal <-
+        imigrantes_intermunicipal %>% mutate(
+                n_imigrantes =
+                        case_when(
+                                imigrantes_intermunicipal$V0103 == imigrantes_intermunicipal$V4250 ~ 0,
+                                TRUE ~ imigrantes_intermunicipal$one
+                        )
+        )
+
+##soma dos imigrantes incluindo os imigrantes intermunicipais dentro de SC
+total_imigrantes_mun <- imigrantes_intermunicipal %>%
+        group_by(V0102, V0103) %>%
+        summarise(total_imigrantes = sum(n_imigrantes))
+
+## soma somente os imigrantes intermunicipais
+total_imigrantes_mun_inter <- imigrantes_intermunicipal %>%
+        filter(V4260 != '22') %>%
+        group_by(V0102, V0103) %>%
+        summarise(total_imigrantes = sum(n_imigrantes))
+
+## soma somente os imigrantes intramunicipais
+total_imigrantes_mun_intra <- imigrantes_intermunicipal %>%
+        filter(V4260 == '22') %>%
+        group_by(V0102, V0103) %>%
+        summarise(total_imigrantes = sum(n_imigrantes))
+
+##unindo os dados
+
+resultado_fluxo_interno_SC <- left_join(
+        codigos_sc,
+        total_imigrantes_mun_inter,
+        by = c("cd_1_municipio" = "V0103")
+)
+
+resultado_fluxo_interno_SC <- resultado_fluxo_interno_SC %>%
+        rename(imigrantes_inter = total_imigrantes)
+
+
+resultado_fluxo_interno_SC <- left_join(
+        resultado_fluxo_interno_SC,
+        total_imigrantes_mun_intra,
+        by = c("cd_1_municipio" = "V0103")
+)
+
+resultado_fluxo_interno_SC <- resultado_fluxo_interno_SC %>%
+        rename(imigrantes_intra = total_imigrantes)
+
+resultado_fluxo_interno_SC <- left_join(
+        resultado_fluxo_interno_SC,
+        total_imigrantes_mun,
+        by = c("cd_1_municipio" = "V0103")
+)
+
+resultado_fluxo_interno_SC <- as.data.frame(resultado_fluxo_interno_SC)
+resultado_fluxo_interno_SC[is.na(resultado_fluxo_interno_SC)] <- 0
+
+resultado_fluxo_interno_SC$perc_inter <- resultado_fluxo_interno_SC$imigrantes_inter / resultado_fluxo_interno_SC$total_imigrantes
+
+resultado_fluxo_interno_SC$perc_intra <- resultado_fluxo_interno_SC$imigrantes_intra / resultado_fluxo_interno_SC$total_imigrantes
+
+resultado_fluxo_interno_SC$round_total <- round(resultado_fluxo_interno_SC$total_imigrantes)
+
+```
+
+
+### 4.2 os Emigrantes em SC
+
+Nesta etapa vamos pegar a parte da amostra do censo em que Santa Catarina tenha sido a resposta para a UF de residencia em 31 de Julho de 1995. Com a ajuda do pacote survey, realizaremos esse processo como foi feito na etapa anterior. 
+
+```{r reading data 9}
+##Filtrando por unidade da federação = SC (emigrantes SC)
+amostra_emigrantes_sc <-
+        amostra_pessoas %>% filter(amostra_pessoas$V4260 == '22')
+## agrupando por área de ponderação
+amostra_emigrantes_sc <-  amostra_emigrantes_sc %>%
+        group_by(AREAP)
+# Calcula tamanhos da população em cada área de ponderação
+tamanho_pop <-
+        aggregate(PES_PESSOA ~ AREAP, data = amostra_emigrantes_sc, FUN = "sum")
+# Ajusta nomes das colunas do arquivo com tamanhos populacionais
+names(tamanho_pop) <- c("AREAP", "Npespop")
+# Agrega variável com tamanhos populacionais ao arquivo de dados
+amostra_emigrantes_sc <-
+        inner_join(amostra_emigrantes_sc, tamanho_pop, by = "AREAP")
+# cria uma coluna com uns
+amostra_emigrantes_sc$one <- 1
+# Adiciona estrutura do plano amostral aos dados da amostra
+amostra_emigrantes_sc_plan <- svydesign(
+        data = amostra_emigrantes_sc,
+        ids = ~ V0300,
+        strata = ~ AREAP,
+        fpc = ~ Npespop,
+        weights = ~ PES_PESSOA
+)
+
+options(survey.lonely.psu = "adjust")
+
+# Armazena dados de pessoas de SC num arquivo permanente
+saveRDS(amostra_emigrantes_sc_plan, file = "emigrantes_sc_plan_2000.rds")
+```
+
+Em seguida, vamos subselecionar na nossa população amostral para obter os imigrantes interestaduais.
+
+```{r reading data 10}
+#Aqui estamos pegando a população amostral construída anteriormentes e a segmentando para obter os emigrantes qualificados interestaduais que saíram de a SC em direção à outras unidades federativas
+
+
+emigrantes_interestadual <-
+        svyby(
+                ~ one ,
+                ~ V4260 + V0102,
+                subset(
+                        amostra_emigrantes_sc_plan,
+                        V0424 %in% c(3, 4) &
+                                V4752 >= 25 &
+                                V0432 %in% c(7,8) &
+                                V0102 != '42'
+                ),
+                svytotal,
+                na.rn = TRUE
+        )
+
+emigrantes_interestadual$one <- round(emigrantes_interestadual$one)
+names(emigrantes_interestadual)[3] <- c('emigrantes_qualificados')
+names(emigrantes_interestadual)[2] <- c('UF_destino')
+emigrantes_interestadual$UF_destino <- as.character(emigrantes_interestadual$UF_destino)
+codigos_ufs$UF <- as.character(codigos_ufs$UF)
+emigrantes_interestadual <- inner_join(emigrantes_interestadual,
+                                       codigos_ufs,
+                                       by = c("UF_destino" = "UF"))
+
+## Vamos aproveitar e descobrir o número total de imigrantes
+sum(emigrantes_interestadual$emigrantes_qualificados)
+
+```
+#### 4.2.1 Os Emigrantes em SC - A nível municipal
+
+```{r reading data 11}
+emigrantes_intermunicipal <-
+        svyby(
+                ~ one ,
+                ~ V4260 + V4250 + V0102 + V0103,
+                subset(
+                        amostra_emigrantes_sc_plan,
+                        V0424 %in% c(3, 4) &
+                                V4752 >= 25 &
+                                V0432 %in% c(7, 8)
+                ),
+                svytotal,
+                na.rn = TRUE
+        )
+
+
+emigrantes_intermunicipal <-
+        emigrantes_intermunicipal %>% mutate(
+                n_emigrantes =
+                        case_when(
+                                emigrantes_intermunicipal$V4250 == emigrantes_intermunicipal$V0103 ~ 0,
+                                TRUE ~ emigrantes_intermunicipal$one
+                        )
+        )
+
+
+##soma dos emigrantes incluindo os imigrantes intermunicipais dentro de SC
+total_emigrantes_mun <- emigrantes_intermunicipal %>%
+        group_by(V4260, V4250) %>%
+        summarise(total_emigrantes = sum(n_emigrantes))
+
+## soma somente os imigrantes intermunicipais
+total_emigrantes_mun_inter <- emigrantes_intermunicipal %>%
+        filter(V0102 != '42') %>%
+        group_by(V4260, V4250) %>%
+        summarise(emigrantes_inter = sum(n_emigrantes))
+
+## soma somente os imigrantes intramunicipais
+total_emigrantes_mun_intra <- emigrantes_intermunicipal %>%
+        filter(V0102 == '42') %>%
+        group_by(V4260, V4250) %>%
+        summarise(emigrantes_intra = sum(n_emigrantes))
+
+
+resultado_fluxo_interno_SC <- left_join(
+        resultado_fluxo_interno_SC,
+        total_emigrantes_mun,
+        by = c("cd_1_municipio" = "V4250")
+)
+
+resultado_fluxo_interno_SC <- left_join(
+        resultado_fluxo_interno_SC,
+        total_emigrantes_mun_inter,
+        by = c("cd_1_municipio" = "V4250")
+)
+
+resultado_fluxo_interno_SC <- left_join(
+        resultado_fluxo_interno_SC,
+        total_emigrantes_mun_intra,
+        by = c("cd_1_municipio" = "V4250")
+)
+
+resultado_fluxo_interno_SC <- as.data.frame(resultado_fluxo_interno_SC)
+resultado_fluxo_interno_SC[is.na(resultado_fluxo_interno_SC)] <- 0
+   
+        
+resultado_fluxo_interno_SC$perc_emigr_inter <- resultado_fluxo_interno_SC$emigrantes_inter / resultado_fluxo_interno_SC$total_emigrantes
+
+resultado_fluxo_interno_SC$perc_emigr_intra <- resultado_fluxo_interno_SC$emigrantes_intra / resultado_fluxo_interno_SC$total_emigrantes
+
+resultado_fluxo_interno_SC$round_total_emigr <- round(resultado_fluxo_interno_SC$total_emigrantes)
+
+resultado_fluxo_interno_SC$saldo_migratorio <- resultado_fluxo_interno_SC$round_total - resultado_fluxo_interno_SC$round_total_emigr
+
+write.csv(resultado_fluxo_interno_SC, "resultado_fluxo_interno_2000.csv")
+write.csv2(resultado_fluxo_interno_SC, "resultado_fluxo_interno_2000_2.csv")
+
+```
+
+
+### 4.3 Unindo os resultado de Imigrantes e Emigrantes qualificados
+
+Nesta etapa, vamos reunir os resultados obtidos dos imigrantes e emigrantes qualificados em uma única tabela e calcular o saldo migratório.
+
+#### 4.3.1 Resuldado da Migração Interestadual de Capital Humano Qualificado de e para Santa Catarina
+
+```{r reading data 12}
+resultado_fluxo_SC <- left_join(
+        codigos_ufs,
+        imigrantes_interestadual %>%
+                select(imigrantes_qualificados, UF_origem),
+        by = c("cd_4260" = "UF_origem")
+)
+
+resultado_fluxo_SC <- left_join(
+        resultado_fluxo_SC,
+        emigrantes_interestadual %>%
+                select(emigrantes_qualificados, UF_destino),
+        by = c("UF" = "UF_destino")
+)
+
+resultado_fluxo_SC[is.na(resultado_fluxo_SC)] <- 0
+
+#calculando o saldo migratório
+resultado_fluxo_SC$saldo_migratorio <-
+        resultado_fluxo_SC$imigrantes_qualificados - resultado_fluxo_SC$emigrantes_qualificados
+
+#visualizar o resultado
+View(resultado_fluxo_SC)
+
+```
+
+#### 4.3.2 Resuldado da Migração Intermunicipal de Capital Humano Qualificado de e para Santa Catarina
+
+## 5 Exportando os resultados
+
+```{r reading data 13}
+#salvar resultados
+write.csv(resultado_fluxo_SC, "resultado_fluxo_2000.csv")
+write.csv2(resultado_fluxo_SC, "resultado_fluxo_2000_csv2.csv")
+
+```
